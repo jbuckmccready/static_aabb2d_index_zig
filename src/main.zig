@@ -31,6 +31,21 @@ pub fn StaticAABB2DIndex(comptime T: type) type {
 
         const Self = @This();
 
+        /// Gets the total bounds of all the items that were added to the index or null if the index
+        /// had no items added in construction (item count is 0).
+        pub fn bounds(self: Self) ?AABB(T) {
+            if (self.boxes.len == 0) {
+                return null;
+            }
+            return self.boxes[self.boxes.len - 1];
+        }
+
+        pub fn deinit(self: Self) void {
+            self.allocator.free(self.level_bounds);
+            self.allocator.free(self.boxes);
+            self.allocator.free(self.indices);
+        }
+
         fn consumeBuilder(builder: *StaticAABB2DIndexBuilder(T)) Self {
             const result = Self{
                 .node_size = builder.node_size,
@@ -45,12 +60,6 @@ pub fn StaticAABB2DIndex(comptime T: type) type {
             builder.indices = &[_]usize{};
             return result;
         }
-
-        pub fn deinit(self: Self) void {
-            self.allocator.free(self.level_bounds);
-            self.allocator.free(self.boxes);
-            self.allocator.free(self.indices);
-        }
     };
 }
 
@@ -59,6 +68,7 @@ pub const StaticAABB2DIndexBuildError = error{
     /// Error for the case when the number of items added does not match the size given when
     /// the builder was initialized.
     WrongItemCount,
+    /// Error occurs when allocator fails to allocate when building the index.
     OutOfMemory,
 };
 
@@ -74,7 +84,7 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
 
         const Self = @This();
 
-        pub fn init(allocator: std.mem.Allocator, num_items: usize, node_size: usize) !Self {
+        pub fn init(allocator: std.mem.Allocator, num_items: usize, node_size: usize) error{OutOfMemory}!Self {
             if (num_items == 0) {
                 // just return early, with no items added
                 return Self{
@@ -172,11 +182,11 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
             var min_y = self.boxes[0].min_y;
             var max_x = self.boxes[0].max_x;
             var max_y = self.boxes[0].max_y;
-            for (1..self.boxes.len) |i| {
+            for (1..self.num_items) |i| {
                 min_x = @min(min_x, self.boxes[i].min_x);
                 min_y = @min(min_y, self.boxes[i].min_y);
-                max_x = @min(max_x, self.boxes[i].max_x);
-                max_y = @min(max_y, self.boxes[i].max_y);
+                max_x = @max(max_x, self.boxes[i].max_x);
+                max_y = @max(max_y, self.boxes[i].max_y);
             }
             // if number of items is less than node size then skip sorting since each node of boxes must
             // be fully scanned regardless and there is only one node
@@ -244,8 +254,8 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
                         pos += 1;
                         node_min_x = @min(node_min_x, aabb.min_x);
                         node_min_y = @min(node_min_y, aabb.min_y);
-                        node_max_x = @min(node_max_x, aabb.max_x);
-                        node_max_y = @min(node_max_y, aabb.max_y);
+                        node_max_x = @max(node_max_x, aabb.max_x);
+                        node_max_y = @max(node_max_y, aabb.max_y);
                         j += 1;
                     }
 
@@ -377,8 +387,33 @@ fn swap(comptime T: type, values: []u32, boxes: []AABB(T), indices: []usize, i: 
 }
 
 test "wrong item count build error" {
-    var builder = try StaticAABB2DIndexBuilder(f64).init(std.testing.allocator, 10, 16);
+    var builder = try StaticAABB2DIndexBuilder(f64).init(std.testing.allocator, 2, 16);
     defer builder.deinit();
-    const spatial_index = builder.build();
-    try std.testing.expectError(StaticAABB2DIndexBuildError.WrongItemCount, spatial_index);
+    var failed_build = builder.build();
+    try std.testing.expectError(StaticAABB2DIndexBuildError.WrongItemCount, failed_build);
+    builder.add(0, 0, 1, 1);
+    failed_build = builder.build();
+    try std.testing.expectError(StaticAABB2DIndexBuildError.WrongItemCount, failed_build);
+    builder.add(1, 1, 3, 3);
+    builder.add(-1, 1, 3, 3);
+    failed_build = builder.build();
+    try std.testing.expectError(StaticAABB2DIndexBuildError.WrongItemCount, failed_build);
+}
+
+test "bounds null when 0 items" {
+    var builder = try StaticAABB2DIndexBuilder(f64).init(std.testing.allocator, 0, 16);
+    defer builder.deinit();
+    const spatial_index = try builder.build();
+    defer spatial_index.deinit();
+    try std.testing.expect(spatial_index.bounds() == null);
+}
+
+test "bounds values when not 0 items" {
+    var builder = try StaticAABB2DIndexBuilder(f64).init(std.testing.allocator, 2, 16);
+    defer builder.deinit();
+    builder.add(0, 0, 1, 1);
+    builder.add(1, 1, 3, 3);
+    const spatial_index = try builder.build();
+    defer spatial_index.deinit();
+    try std.testing.expectEqual(AABB(f64).init(0, 0, 3, 3), spatial_index.bounds().?);
 }
