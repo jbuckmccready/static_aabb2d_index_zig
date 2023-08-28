@@ -40,25 +40,15 @@ pub fn StaticAABB2DIndex(comptime T: type) type {
             return self.boxes[self.boxes.len - 1];
         }
 
+        /// Gets the total count of items that were added to the index during construction.
+        pub fn count(self: Self) usize {
+            return self.num_items;
+        }
+
         pub fn deinit(self: Self) void {
             self.allocator.free(self.level_bounds);
             self.allocator.free(self.boxes);
             self.allocator.free(self.indices);
-        }
-
-        fn consumeBuilder(builder: *StaticAABB2DIndexBuilder(T)) Self {
-            const result = Self{
-                .node_size = builder.node_size,
-                .num_items = builder.num_items,
-                .level_bounds = builder.level_bounds,
-                .boxes = builder.boxes,
-                .indices = builder.indices,
-                .allocator = builder.allocator,
-            };
-            builder.level_bounds = &[_]usize{};
-            builder.boxes = &[_]AABB(T){};
-            builder.indices = &[_]usize{};
-            return result;
         }
     };
 }
@@ -120,6 +110,7 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
                 }
             }
             const level_bounds = try level_bounds_builder.toOwnedSlice();
+            errdefer allocator.free(level_bounds);
 
             // unitialized array to hold AABB
             const boxes = try allocator.alloc(AABB(T), num_nodes);
@@ -174,7 +165,7 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
             }
 
             if (self.num_items == 0) {
-                return StaticAABB2DIndex(T).consumeBuilder(self);
+                return self.intoIndex();
             }
 
             // calculate total bounds
@@ -195,7 +186,7 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
                 // fill root box with total extents
                 self.boxes[self.pos] = AABB(T).init(min_x, min_y, max_x, max_y);
 
-                return StaticAABB2DIndex(T).consumeBuilder(self);
+                return self.intoIndex();
             }
 
             const width = max_x - min_x;
@@ -266,7 +257,23 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
                 }
             }
 
-            return StaticAABB2DIndex(T).consumeBuilder(self);
+            return self.intoIndex();
+        }
+
+        /// Helper function to construct an owned index with builder data (consuming the builder).
+        fn intoIndex(self: *Self) StaticAABB2DIndex(T) {
+            const result = StaticAABB2DIndex(T){
+                .node_size = self.node_size,
+                .num_items = self.num_items,
+                .level_bounds = self.level_bounds,
+                .boxes = self.boxes,
+                .indices = self.indices,
+                .allocator = self.allocator,
+            };
+            self.level_bounds = &[_]usize{};
+            self.boxes = &[_]AABB(T){};
+            self.indices = &[_]usize{};
+            return result;
         }
     };
 }
@@ -416,4 +423,14 @@ test "bounds values when not 0 items" {
     const spatial_index = try builder.build();
     defer spatial_index.deinit();
     try std.testing.expectEqual(AABB(f64).init(0, 0, 3, 3), spatial_index.bounds().?);
+}
+
+test "count" {
+    var builder = try StaticAABB2DIndexBuilder(f64).init(std.testing.allocator, 2, 16);
+    defer builder.deinit();
+    builder.add(0, 0, 1, 1);
+    builder.add(1, 1, 3, 3);
+    const spatial_index = try builder.build();
+    defer spatial_index.deinit();
+    try std.testing.expectEqual(@as(usize, 2), spatial_index.count());
 }
