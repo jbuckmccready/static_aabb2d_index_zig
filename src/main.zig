@@ -191,12 +191,12 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
             var n = num_items;
             var num_nodes = num_items;
             var level_bounds_builder = std.ArrayList(usize).init(allocator);
-
-            // calculate the total number of nodes in the R-tree to allocate space for
-            // and the index of each tree level (level_bounds, used in search later)
-
             // ensure level_bounds freed if error occurs while building it
             errdefer level_bounds_builder.deinit();
+
+            try level_bounds_builder.append(n);
+            // calculate the total number of nodes in the R-tree to allocate space for
+            // and the index of each tree level (level_bounds, used in search later)
             while (true) {
                 const numer: f64 = @floatFromInt(n);
                 const denom: f64 = @floatFromInt(node_sz);
@@ -258,7 +258,7 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
         }
 
         const typesSupportedMsg = "only int and float types are supported";
-        fn u16ToNumType(input: u16) T {
+        fn u16ToNumT(input: u16) T {
             return switch (@typeInfo(T)) {
                 .Float => @floatFromInt(input),
                 .Int => @intCast(input),
@@ -266,7 +266,7 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
             };
         }
 
-        fn numTypeToU16(num: T) u16 {
+        fn numTToU16(num: T) u16 {
             return switch (@typeInfo(T)) {
                 .Float => @intFromFloat(num),
                 .Int => @intCast(num),
@@ -274,7 +274,7 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
             };
         }
 
-        fn numTypeDiv(numerator: T, denominator: T) T {
+        fn numTDiv(numerator: T, denominator: T) T {
             return switch (@typeInfo(T)) {
                 .Float => numerator / denominator,
                 .Int => @divTrunc(numerator, denominator),
@@ -282,13 +282,13 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
             };
         }
 
-        const numTypeMinVal = switch (@typeInfo(T)) {
-            .Float => std.math.floatMin(T),
+        const numTMinVal = switch (@typeInfo(T)) {
+            .Float => -std.math.floatMax(T),
             .Int => @as(T, std.math.minInt(T)),
             else => @compileError(typesSupportedMsg),
         };
 
-        const numTypeMaxVal = switch (@typeInfo(T)) {
+        const numTMaxVal = switch (@typeInfo(T)) {
             .Float => std.math.floatMax(T),
             .Int => @as(T, std.math.maxInt(T)),
             else => @compileError(typesSupportedMsg),
@@ -327,8 +327,8 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
             const width = max_x - min_x;
             const height = max_y - min_y;
             // hilbert max input value for x and y
-            const hilbert_max: T = u16ToNumType(std.math.maxInt(u16));
-            const two: T = u16ToNumType(2);
+            const hilbert_max: T = u16ToNumT(std.math.maxInt(u16));
+            const two: T = u16ToNumT(2);
             // mapping the x and y coordinates of the center of the item boxes to values in the range
             // [0 -> n - 1] such that the min of the entire set of bounding boxes maps to 0 and the max
             // of the entire set of bounding boxes maps to n - 1 our 2d space is x: [0 -> n-1] and
@@ -340,13 +340,13 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
                 const aabb = self.boxes[i];
                 var x: u16 = 0;
                 if (width != @as(T, 0)) {
-                    const x_mid = numTypeDiv((aabb.min_x + aabb.max_x), two);
-                    x = numTypeToU16(hilbert_max * numTypeDiv(x_mid - min_x, width));
+                    const x_mid = numTDiv((aabb.min_x + aabb.max_x), two);
+                    x = numTToU16(hilbert_max * numTDiv(x_mid - min_x, width));
                 }
                 var y: u16 = 0;
                 if (height != @as(T, 0)) {
-                    const y_mid = numTypeDiv((aabb.min_y + aabb.max_y), two);
-                    y = numTypeToU16(hilbert_max * numTypeDiv((y_mid - min_y), height));
+                    const y_mid = numTDiv((aabb.min_y + aabb.max_y), two);
+                    y = numTToU16(hilbert_max * numTDiv((y_mid - min_y), height));
                 }
 
                 hilbert_values[i] = hilbertXYToIndex(x, y);
@@ -369,10 +369,10 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
                 const end = self.level_bounds[i];
 
                 while (pos < end) {
-                    var node_min_x = numTypeMaxVal;
-                    var node_min_y = numTypeMaxVal;
-                    var node_max_x = numTypeMinVal;
-                    var node_max_y = numTypeMinVal;
+                    var node_min_x = numTMaxVal;
+                    var node_min_y = numTMaxVal;
+                    var node_max_x = numTMinVal;
+                    var node_max_y = numTMinVal;
                     const node_index = pos;
 
                     // calculate bounding box for the new node
@@ -636,6 +636,59 @@ fn createIndexFromData(comptime T: type, data: []const T) !StaticAABB2DIndex(T) 
 
 fn createTestIndex(comptime T: type) !StaticAABB2DIndex(T) {
     return createIndexFromData(T, createTestData(T));
+}
+
+fn createSmallTestIndex(comptime T: type) !StaticAABB2DIndex(T) {
+    const item_count = 14;
+    createIndexFromData(T, createTestData(T)[0 .. 4 * item_count]);
+}
+
+test "building from zeroes" {
+    {
+        // f64 boxes
+        const item_count = 50;
+        var data = try std.testing.allocator.alloc(f64, 4 * item_count);
+        defer std.testing.allocator.free(data);
+        for (data) |*d| {
+            d.* = 0;
+        }
+
+        const index = try createIndexFromData(f64, data);
+        defer index.deinit();
+        const query_results = try index.query(-1, -1, 1, 1, std.testing.allocator);
+        defer query_results.deinit();
+        std.sort.pdq(usize, query_results.items, {}, std.sort.asc(usize));
+        var expected = try std.testing.allocator.alloc(usize, data.len / 4);
+        defer std.testing.allocator.free(expected);
+        for (0..expected.len) |i| {
+            expected[i] = i;
+        }
+
+        try std.testing.expectEqualSlices(usize, expected, query_results.items);
+    }
+
+    {
+        // i32 boxes
+        const item_count = 50;
+        var data = try std.testing.allocator.alloc(i32, 4 * item_count);
+        defer std.testing.allocator.free(data);
+        for (data) |*d| {
+            d.* = 0;
+        }
+
+        const index = try createIndexFromData(i32, data);
+        defer index.deinit();
+        const query_results = try index.query(-1, -1, 1, 1, std.testing.allocator);
+        defer query_results.deinit();
+        std.sort.pdq(usize, query_results.items, {}, std.sort.asc(usize));
+        var expected = try std.testing.allocator.alloc(usize, data.len / 4);
+        defer std.testing.allocator.free(expected);
+        for (0..expected.len) |i| {
+            expected[i] = i;
+        }
+
+        try std.testing.expectEqualSlices(usize, expected, query_results.items);
+    }
 }
 
 test "basic query" {
