@@ -150,6 +150,8 @@ pub const StaticAABB2DIndexBuildError = error{
     WrongItemCount,
     /// Error occurs when allocator fails to allocate when building the index.
     OutOfMemory,
+    /// Error for the case when the numeric type T used for the index fails to cast to/from u16.
+    NumericCastFailed,
 };
 
 pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
@@ -189,14 +191,31 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
             const node_sz = std.math.clamp(node_size, 2, 65535);
 
             var n = num_items;
-            var num_nodes = num_items;
-            var level_bounds_builder = std.ArrayList(usize).init(allocator);
-            // ensure level_bounds freed if error occurs while building it
-            errdefer level_bounds_builder.deinit();
 
-            try level_bounds_builder.append(n);
             // calculate the total number of nodes in the R-tree to allocate space for
             // and the index of each tree level (level_bounds, used in search later)
+            const level_bounds_len = blk: {
+                var len: usize = 1;
+                while (true) {
+                    const numer: f64 = @floatFromInt(n);
+                    const denom: f64 = @floatFromInt(node_sz);
+                    n = @intFromFloat(@ceil(numer / denom));
+                    len += 1;
+                    if (n == 1) {
+                        break;
+                    }
+                }
+                break :blk len;
+            };
+
+            // allocate the exact length required for the level bounds and add the level bound index
+            // positions and build up total num_nodes for the tree
+            n = num_items;
+            var num_nodes = num_items;
+            var level_bounds_builder = try std.ArrayList(usize).initCapacity(allocator, level_bounds_len);
+            errdefer level_bounds_builder.deinit();
+            try level_bounds_builder.append(n);
+
             while (true) {
                 const numer: f64 = @floatFromInt(n);
                 const denom: f64 = @floatFromInt(node_sz);
@@ -207,6 +226,7 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
                     break;
                 }
             }
+
             const level_bounds = try level_bounds_builder.toOwnedSlice();
             errdefer allocator.free(level_bounds);
 
@@ -257,19 +277,42 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
             self.pos += 1;
         }
 
+        /// Helper function to cast a float to int with NAN, inf, and overflow checks.
+        fn intFromFloatChecked(comptime I: type, src: anytype) error{NumericCastFailed}!I {
+            const max_as_float: @TypeOf(src) = @floatFromInt(std.math.maxInt(I));
+            const min_as_float: @TypeOf(src) = @floatFromInt(std.math.minInt(I));
+            // Check float is not NAN or infinity and fits within the destination type.
+            if (src != src or std.math.isInf(src) or src > max_as_float or src < min_as_float) {
+                return error.NumericCastFailed;
+            } else {
+                return @intFromFloat(src);
+            }
+        }
+
+        /// Helper function to cast between int types with overflow check.
+        fn intCastChecked(comptime I: type, src: anytype) error{NumericCastFailed}!I {
+            const dst_max: I = std.math.maxInt(I);
+            const dst_min: I = std.math.minInt(I);
+            if (src > dst_max or src < dst_min) {
+                return error.NumericCastFailed;
+            } else {
+                return @intCast(src);
+            }
+        }
+
         const typesSupportedMsg = "only int and float types are supported";
-        fn u16ToNumT(input: u16) T {
+        fn u16ToNumT(input: u16) error{NumericCastFailed}!T {
             return switch (@typeInfo(T)) {
                 .Float => @floatFromInt(input),
-                .Int => @intCast(input),
+                .Int => try intCastChecked(T, input),
                 else => @compileError(typesSupportedMsg),
             };
         }
 
-        fn numTToU16(num: T) u16 {
+        fn numTToU16(num: T) error{NumericCastFailed}!u16 {
             return switch (@typeInfo(T)) {
-                .Float => @intFromFloat(num),
-                .Int => @intCast(num),
+                .Float => intFromFloatChecked(u16, num),
+                .Int => intCastChecked(u16, num),
                 else => @compileError(typesSupportedMsg),
             };
         }
@@ -327,8 +370,8 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
             const width = max_x - min_x;
             const height = max_y - min_y;
             // hilbert max input value for x and y
-            const hilbert_max: T = u16ToNumT(std.math.maxInt(u16));
-            const two: T = u16ToNumT(2);
+            const hilbert_max: T = try u16ToNumT(std.math.maxInt(u16));
+            const two: T = try u16ToNumT(2);
             // mapping the x and y coordinates of the center of the item boxes to values in the range
             // [0 -> n - 1] such that the min of the entire set of bounding boxes maps to 0 and the max
             // of the entire set of bounding boxes maps to n - 1 our 2d space is x: [0 -> n-1] and
@@ -341,12 +384,12 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
                 var x: u16 = 0;
                 if (width != @as(T, 0)) {
                     const x_mid = numTDiv((aabb.min_x + aabb.max_x), two);
-                    x = numTToU16(hilbert_max * numTDiv(x_mid - min_x, width));
+                    x = try numTToU16(hilbert_max * numTDiv(x_mid - min_x, width));
                 }
                 var y: u16 = 0;
                 if (height != @as(T, 0)) {
                     const y_mid = numTDiv((aabb.min_y + aabb.max_y), two);
-                    y = numTToU16(hilbert_max * numTDiv((y_mid - min_y), height));
+                    y = try numTToU16(hilbert_max * numTDiv((y_mid - min_y), height));
                 }
 
                 hilbert_values[i] = hilbertXYToIndex(x, y);
@@ -365,10 +408,8 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
 
             // generate nodes at each tree level, bottom-up
             var pos: usize = 0;
-            for (0..self.level_bounds.len - 1) |i| {
-                const end = self.level_bounds[i];
-
-                while (pos < end) {
+            for (self.level_bounds[0 .. self.level_bounds.len - 1]) |level_end| {
+                while (pos < level_end) {
                     var node_min_x = numTMaxVal;
                     var node_min_y = numTMaxVal;
                     var node_max_x = numTMinVal;
@@ -377,7 +418,7 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
 
                     // calculate bounding box for the new node
                     var j: usize = 0;
-                    while (j < self.node_size and pos < end) {
+                    while (j < self.node_size and pos < level_end) {
                         const aabb = self.boxes[pos];
                         pos += 1;
                         node_min_x = @min(node_min_x, aabb.min_x);
@@ -407,6 +448,7 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
                 .indices = self.indices,
                 .allocator = self.allocator,
             };
+            // set to empty slices so it is safe to deinit the builder
             self.level_bounds = &[_]usize{};
             self.boxes = &[_]AABB(T){};
             self.indices = &[_]usize{};
@@ -503,14 +545,14 @@ fn sort(
 
     while (true) {
         while (true) {
-            i = i +% 1;
+            i +%= 1;
             if (values[i] >= pivot) {
                 break;
             }
         }
 
         while (true) {
-            j = j -% 1;
+            j -%= 1;
             if (values[j] <= pivot) {
                 break;
             }
