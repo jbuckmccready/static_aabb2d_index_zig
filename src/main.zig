@@ -29,6 +29,13 @@ pub fn AABB(comptime T: type) type {
 
             return true;
         }
+        pub fn contains_aabb(self: Self, other: AABB(T)) bool {
+            return self.contains(other.min_x, other.min_y, other.max_x, other.max_y);
+        }
+
+        pub fn contains(self: Self, min_x: T, min_y: T, max_x: T, max_y: T) bool {
+            return self.min_x <= min_x and self.min_y <= min_y and self.max_x >= max_x and self.max_y >= max_y;
+        }
     };
 }
 
@@ -58,6 +65,10 @@ pub fn StaticAABB2DIndex(comptime T: type) type {
                 return null;
             }
             return self.boxes[self.boxes.len - 1];
+        }
+
+        pub fn item_boxes(self: Self) []AABB(T) {
+            return self.boxes[0..self.num_items];
         }
 
         fn collectingVisitor(context: *std.ArrayList(usize), index: usize) error{OutOfMemory}!bool {
@@ -102,6 +113,10 @@ pub fn StaticAABB2DIndex(comptime T: type) type {
             comptime visitorFn: fn (@TypeOf(context), index: usize) anyerror!bool,
             stack: *std.ArrayList(usize),
         ) !void {
+            if (self.num_items == 0) {
+                return;
+            }
+
             var node_index = self.boxes.len - 1;
             var level = self.level_bounds.len - 1;
             stack.clearRetainingCapacity();
@@ -572,66 +587,6 @@ fn swap(comptime T: type, values: []u32, boxes: []AABB(T), indices: []usize, i: 
     std.mem.swap(usize, &indices[i], &indices[j]);
 }
 
-test "wrong item count build error" {
-    var builder = try StaticAABB2DIndexBuilder(f64).initWithNodeSize(std.testing.allocator, 2, 16);
-    defer builder.deinit();
-    var failed_build = builder.build();
-    try std.testing.expectError(StaticAABB2DIndexBuildError.WrongItemCount, failed_build);
-    builder.add(0, 0, 1, 1);
-    failed_build = builder.build();
-    try std.testing.expectError(StaticAABB2DIndexBuildError.WrongItemCount, failed_build);
-    builder.add(1, 1, 3, 3);
-    builder.add(-1, 1, 3, 3);
-    failed_build = builder.build();
-    try std.testing.expectError(StaticAABB2DIndexBuildError.WrongItemCount, failed_build);
-}
-
-test "bounds null when 0 items" {
-    var builder = try StaticAABB2DIndexBuilder(f64).initWithNodeSize(std.testing.allocator, 0, 16);
-    defer builder.deinit();
-    const spatial_index = try builder.build();
-    defer spatial_index.deinit();
-    try std.testing.expect(spatial_index.bounds() == null);
-}
-
-test "bounds values when not 0 items" {
-    var builder = try StaticAABB2DIndexBuilder(f64).initWithNodeSize(std.testing.allocator, 2, 16);
-    defer builder.deinit();
-    builder.add(0, 0, 1, 1);
-    builder.add(1, 1, 3, 3);
-    const spatial_index = try builder.build();
-    defer spatial_index.deinit();
-    try std.testing.expectEqual(AABB(f64).init(0, 0, 3, 3), spatial_index.bounds().?);
-}
-
-test "expected node size" {
-    var builder = try StaticAABB2DIndexBuilder(f64).initWithNodeSize(std.testing.allocator, 2, 16);
-    defer builder.deinit();
-    builder.add(0, 0, 1, 1);
-    builder.add(1, 1, 3, 3);
-    const spatial_index = try builder.build();
-    defer spatial_index.deinit();
-    try std.testing.expectEqual(@as(usize, 16), spatial_index.node_size);
-}
-
-test "0 expected number of items" {
-    var builder = try StaticAABB2DIndexBuilder(f64).initWithNodeSize(std.testing.allocator, 0, 16);
-    defer builder.deinit();
-    const spatial_index = try builder.build();
-    defer spatial_index.deinit();
-    try std.testing.expectEqual(@as(usize, 0), spatial_index.num_items);
-}
-
-test "expected number of items" {
-    var builder = try StaticAABB2DIndexBuilder(f64).initWithNodeSize(std.testing.allocator, 2, 16);
-    defer builder.deinit();
-    builder.add(0, 0, 1, 1);
-    builder.add(1, 1, 3, 3);
-    const spatial_index = try builder.build();
-    defer spatial_index.deinit();
-    try std.testing.expectEqual(@as(usize, 2), spatial_index.num_items);
-}
-
 fn createTestData(comptime T: type) *const [400]T {
     return &[_]T{
         8,  62, 11, 66, 57, 17, 57, 19, 76, 26, 79, 29, 36, 56, 38, 56, 92, 77, 96, 80, 87, 70, 90,
@@ -655,8 +610,8 @@ fn createTestData(comptime T: type) *const [400]T {
     };
 }
 
-fn aabbFromTestData(comptime T: type, data: []const T) !std.ArrayList(T) {
-    var result = std.ArrayList(T).init(std.testing.allocator);
+fn aabbFromTestData(comptime T: type, data: []const T) !std.ArrayList(AABB(T)) {
+    var result = std.ArrayList(AABB(T)).init(std.testing.allocator);
     errdefer result.deinit();
     var i: usize = 0;
     while (i < data.len) : (i += 4) {
@@ -676,16 +631,30 @@ fn createIndexFromData(comptime T: type, data: []const T) !StaticAABB2DIndex(T) 
     return builder.build();
 }
 
+fn createIndexFromDataWithNodeSize(comptime T: type, data: []const T, node_size: usize) !StaticAABB2DIndex(T) {
+    var builder = try StaticAABB2DIndexBuilder(T).initWithNodeSize(
+        std.testing.allocator,
+        data.len / 4,
+        node_size,
+    );
+    var i: usize = 0;
+    while (i < data.len) : (i += 4) {
+        builder.add(data[i], data[i + 1], data[i + 2], data[i + 3]);
+    }
+
+    return builder.build();
+}
+
 fn createTestIndex(comptime T: type) !StaticAABB2DIndex(T) {
     return createIndexFromData(T, createTestData(T));
 }
 
 fn createSmallTestIndex(comptime T: type) !StaticAABB2DIndex(T) {
     const item_count = 14;
-    createIndexFromData(T, createTestData(T)[0 .. 4 * item_count]);
+    return createIndexFromData(T, createTestData(T)[0 .. 4 * item_count]);
 }
 
-test "building from zeroes" {
+test "building from zeroes is ok" {
     {
         // f64 boxes
         const item_count = 50;
@@ -731,6 +700,138 @@ test "building from zeroes" {
 
         try std.testing.expectEqualSlices(usize, expected, query_results.items);
     }
+}
+
+test "0 item index works" {
+    var builder = try StaticAABB2DIndexBuilder(f64).initWithNodeSize(std.testing.allocator, 0, 16);
+    defer builder.deinit();
+    const spatial_index = try builder.build();
+    defer spatial_index.deinit();
+    try std.testing.expectEqual(@as(usize, 0), spatial_index.num_items);
+
+    const f64_max = std.math.floatMax(f64);
+    const f64_min = -f64_max;
+    const results = try spatial_index.query(f64_min, f64_min, f64_max, f64_max, std.testing.allocator);
+    defer results.deinit();
+    try std.testing.expectEqual(@as(usize, 0), results.items.len);
+}
+
+test "building index from too few items errors" {
+    var builder = try StaticAABB2DIndexBuilder(f64).initWithNodeSize(std.testing.allocator, 2, 16);
+    defer builder.deinit();
+    builder.add(0, 0, 1, 1);
+    const failed_build = builder.build();
+    try std.testing.expectError(StaticAABB2DIndexBuildError.WrongItemCount, failed_build);
+}
+
+test "building index from too many items errors" {
+    var builder = try StaticAABB2DIndexBuilder(f64).initWithNodeSize(std.testing.allocator, 2, 16);
+    defer builder.deinit();
+    builder.add(0, 0, 1, 1);
+    builder.add(1, 1, 3, 3);
+    builder.add(-1, 1, 3, 3);
+    const failed_build = builder.build();
+    try std.testing.expectError(StaticAABB2DIndexBuildError.WrongItemCount, failed_build);
+}
+
+test "skip sorting small index" {
+    const index = try createSmallTestIndex(i32);
+    defer index.deinit();
+    try std.testing.expectEqual(AABB(i32).init(0, 2, 96, 93), index.bounds().?);
+    try std.testing.expectEqual(@as(usize, 2), index.level_bounds.len);
+    try std.testing.expectEqualSlices(usize, &[_]usize{ 14, 15 }, index.level_bounds);
+    try std.testing.expectEqual(@as(usize, 15), index.boxes.len);
+
+    const expected_item_boxes = &[_]AABB(i32){
+        AABB(i32).init(8, 62, 11, 66),
+        AABB(i32).init(57, 17, 57, 19),
+        AABB(i32).init(76, 26, 79, 29),
+        AABB(i32).init(36, 56, 38, 56),
+        AABB(i32).init(92, 77, 96, 80),
+        AABB(i32).init(87, 70, 90, 74),
+        AABB(i32).init(43, 41, 47, 43),
+        AABB(i32).init(0, 58, 2, 62),
+        AABB(i32).init(76, 86, 80, 89),
+        AABB(i32).init(27, 13, 27, 15),
+        AABB(i32).init(71, 63, 75, 67),
+        AABB(i32).init(25, 2, 27, 2),
+        AABB(i32).init(87, 6, 88, 6),
+        AABB(i32).init(22, 90, 23, 93),
+    };
+
+    // note order should always match (should not be sorted differently from order added since
+    // num_items < node_size)
+    try std.testing.expectEqualSlices(AABB(i32), expected_item_boxes, index.item_boxes());
+}
+
+test "many tree levels" {
+    const test_data = createTestData(i32);
+    const input_boxes = try aabbFromTestData(i32, test_data);
+    defer input_boxes.deinit();
+    const index = try createIndexFromDataWithNodeSize(i32, test_data, 4);
+    defer index.deinit();
+
+    try std.testing.expectEqualSlices(usize, &[_]usize{ 100, 125, 132, 134, 135 }, index.level_bounds);
+    try std.testing.expectEqual(test_data.len / 4, index.num_items);
+    try std.testing.expectEqual(index.boxes.len, index.level_bounds[index.level_bounds.len - 1]);
+
+    // item box indices should map back to original aabb index
+    for (index.boxes[0..index.num_items], 0..) |box, i| {
+        const added_item_index = index.indices[i];
+        try std.testing.expectEqual(box, input_boxes.items[added_item_index]);
+    }
+
+    // item box indices should get child start index
+    for (index.num_items..index.boxes.len - 1) |parent_node_index| {
+        const children_start_index = index.indices[parent_node_index];
+        const children_end_index = if (parent_node_index == index.boxes.len - 1)
+            index.boxes.len
+        else
+            index.indices[parent_node_index + 1];
+
+        // all child boxes should be contained by their parent
+        for (children_start_index..children_end_index) |i| {
+            try std.testing.expect(index.boxes[parent_node_index].contains_aabb(index.boxes[i]));
+        }
+    }
+}
+
+test "bounds null when 0 items" {
+    var builder = try StaticAABB2DIndexBuilder(f64).initWithNodeSize(std.testing.allocator, 0, 16);
+    defer builder.deinit();
+    const spatial_index = try builder.build();
+    defer spatial_index.deinit();
+    try std.testing.expect(spatial_index.bounds() == null);
+}
+
+test "bounds values when not 0 items" {
+    var builder = try StaticAABB2DIndexBuilder(f64).initWithNodeSize(std.testing.allocator, 2, 16);
+    defer builder.deinit();
+    builder.add(0, 0, 1, 1);
+    builder.add(1, 1, 3, 3);
+    const spatial_index = try builder.build();
+    defer spatial_index.deinit();
+    try std.testing.expectEqual(AABB(f64).init(0, 0, 3, 3), spatial_index.bounds().?);
+}
+
+test "expected node size" {
+    var builder = try StaticAABB2DIndexBuilder(f64).initWithNodeSize(std.testing.allocator, 2, 16);
+    defer builder.deinit();
+    builder.add(0, 0, 1, 1);
+    builder.add(1, 1, 3, 3);
+    const spatial_index = try builder.build();
+    defer spatial_index.deinit();
+    try std.testing.expectEqual(@as(usize, 16), spatial_index.node_size);
+}
+
+test "expected number of items" {
+    var builder = try StaticAABB2DIndexBuilder(f64).initWithNodeSize(std.testing.allocator, 2, 16);
+    defer builder.deinit();
+    builder.add(0, 0, 1, 1);
+    builder.add(1, 1, 3, 3);
+    const spatial_index = try builder.build();
+    defer spatial_index.deinit();
+    try std.testing.expectEqual(@as(usize, 2), spatial_index.num_items);
 }
 
 test "basic query" {
