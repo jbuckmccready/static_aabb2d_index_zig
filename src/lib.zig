@@ -292,60 +292,45 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
             self.pos += 1;
         }
 
-        /// Helper function to cast a float to int with NAN, inf, and overflow checks.
-        fn intFromFloatChecked(comptime I: type, src: anytype) error{NumericCastFailed}!I {
+        /// Helper function to cast a float to int with saturation or 0 if NAN.
+        fn intFromFloatSaturated(comptime I: type, src: anytype) I {
             const max_as_float: @TypeOf(src) = @floatFromInt(std.math.maxInt(I));
             const min_as_float: @TypeOf(src) = @floatFromInt(std.math.minInt(I));
-            // Check float is not NAN or infinity and fits within the destination type.
-            if (src != src or std.math.isInf(src) or src > max_as_float or src < min_as_float) {
-                return error.NumericCastFailed;
-            } else {
-                return @intFromFloat(src);
+            if (src > max_as_float) {
+                return std.math.maxInt(I);
             }
-        }
-
-        /// Helper function to cast between int types with overflow check.
-        fn intCastChecked(comptime I: type, src: anytype) error{NumericCastFailed}!I {
-            const dst_max: I = std.math.maxInt(I);
-            const dst_min: I = std.math.minInt(I);
-            if (src > dst_max or src < dst_min) {
-                return error.NumericCastFailed;
-            } else {
-                return @intCast(src);
+            if (src < min_as_float) {
+                return std.math.minInt(I);
             }
+            if (std.math.isNan(src)) {
+                return @as(I, 0);
+            }
+            return @intFromFloat(src);
         }
 
         const typesSupportedMsg = "only int and float types are supported";
-        fn u16ToNumT(input: u16) error{NumericCastFailed}!T {
+        /// Helper function to cast numeric T to f64.
+        fn numTToF64(num: T) error{NumericCastFailed}!f64 {
             return switch (@typeInfo(T)) {
-                .Float => @floatFromInt(input),
-                .Int => try intCastChecked(T, input),
+                .Float => @floatCast(num),
+                .Int => @floatFromInt(num),
                 else => @compileError(typesSupportedMsg),
             };
         }
-
-        fn numTToU16(num: T) error{NumericCastFailed}!u16 {
-            return switch (@typeInfo(T)) {
-                .Float => intFromFloatChecked(u16, num),
-                .Int => intCastChecked(u16, num),
-                else => @compileError(typesSupportedMsg),
-            };
+        /// Helper function for constucting x and y hilbert coordinate values.
+        fn hilbertCoord(scaled_extent: f64, aabb_min: f64, aabb_max: f64, extent_min: f64) u16 {
+            const value = scaled_extent * (0.5 * (aabb_min + aabb_max) - extent_min);
+            return intFromFloatSaturated(u16, value);
         }
 
-        fn numTDiv(numerator: T, denominator: T) T {
-            return switch (@typeInfo(T)) {
-                .Float => numerator / denominator,
-                .Int => @divTrunc(numerator, denominator),
-                else => @compileError(typesSupportedMsg),
-            };
-        }
-
+        /// Min value for numeric T.
         const numTMinVal = switch (@typeInfo(T)) {
             .Float => -std.math.floatMax(T),
             .Int => @as(T, std.math.minInt(T)),
             else => @compileError(typesSupportedMsg),
         };
 
+        /// Max value for numeric T.
         const numTMaxVal = switch (@typeInfo(T)) {
             .Float => std.math.floatMax(T),
             .Int => @as(T, std.math.maxInt(T)),
@@ -382,13 +367,16 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
                 return self.intoIndex();
             }
 
-            const width = max_x - min_x;
-            const height = max_y - min_y;
+            const width = try numTToF64(max_x - min_x);
+            const height = try numTToF64(max_y - min_y);
+            const extent_min_x = try numTToF64(min_x);
+            const extent_min_y = try numTToF64(min_y);
 
             // hilbert max input value for x and y
-            const hilbert_max: T = try u16ToNumT(std.math.maxInt(u16));
+            const hilbert_max: f64 = @floatFromInt(std.math.maxInt(u16));
+            const scaled_width = hilbert_max / width;
+            const scaled_height = hilbert_max / height;
 
-            const two: T = try u16ToNumT(2);
             // mapping the x and y coordinates of the center of the item boxes to values in the range
             // [0 -> n - 1] such that the min of the entire set of bounding boxes maps to 0 and the max
             // of the entire set of bounding boxes maps to n - 1 our 2d space is x: [0 -> n-1] and
@@ -397,17 +385,13 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
             defer self.allocator.free(hilbert_values);
 
             for (self.boxes[0..self.num_items], 0..) |aabb, i| {
-                var x: u16 = 0;
-                if (width != @as(T, 0)) {
-                    const x_mid = numTDiv((aabb.min_x + aabb.max_x), two);
-                    x = try numTToU16(numTDiv(hilbert_max * (x_mid - min_x), width));
-                }
-                var y: u16 = 0;
-                if (height != @as(T, 0)) {
-                    const y_mid = numTDiv((aabb.min_y + aabb.max_y), two);
-                    y = try numTToU16(numTDiv(hilbert_max * (y_mid - min_y), height));
-                }
+                const aabb_min_x = try numTToF64(aabb.min_x);
+                const aabb_min_y = try numTToF64(aabb.min_y);
+                const aabb_max_x = try numTToF64(aabb.max_x);
+                const aabb_max_y = try numTToF64(aabb.max_y);
 
+                const x = hilbertCoord(scaled_width, aabb_min_x, aabb_max_x, extent_min_x);
+                const y = hilbertCoord(scaled_height, aabb_min_y, aabb_max_y, extent_min_y);
                 hilbert_values[i] = hilbertXYToIndex(x, y);
             }
 
@@ -810,11 +794,11 @@ test "expected indices order" {
     const index = try createTestIndex(i32);
     defer index.deinit();
     const expected_indices = &[_]usize{
-        95, 92, 87, 70, 67, 64, 55, 52, 49, 43, 40, 11, 26, 19, 44, 9,   59, 77, 84, 6,  88, 21, 86,
-        23, 18, 80, 39, 58, 62, 75, 27, 90, 0,  73, 7,  37, 56, 30, 17,  79, 48, 13, 14, 91, 85, 38,
-        25, 76, 3,  66, 33, 24, 31, 29, 54, 68, 99, 61, 16, 50, 51, 28,  72, 22, 78, 74, 8,  93, 53,
-        89, 20, 83, 81, 32, 10, 96, 47, 5,  63, 4,  98, 35, 82, 57, 65,  97, 46, 2,  41, 42, 36, 69,
-        34, 45, 60, 1,  15, 94, 12, 71, 0,  16, 32, 48, 64, 80, 96, 100,
+        95, 92, 87, 70, 67, 64, 55, 52, 49, 43, 40, 11, 26, 19, 44, 9,   59, 84, 77, 39, 6,  75, 80,
+        18, 23, 62, 58, 88, 86, 27, 90, 0,  73, 7,  37, 30, 13, 14, 48,  17, 56, 79, 25, 38, 85, 76,
+        91, 66, 24, 33, 21, 3,  99, 16, 54, 28, 29, 68, 50, 31, 22, 72,  78, 83, 53, 89, 51, 93, 81,
+        20, 8,  96, 4,  63, 74, 5,  47, 32, 10, 98, 61, 82, 57, 97, 65,  35, 41, 2,  45, 46, 36, 42,
+        69, 34, 1,  60, 15, 94, 12, 71, 0,  16, 32, 48, 64, 80, 96, 100,
     };
     try std.testing.expectEqualSlices(usize, expected_indices, index.indices);
 }
