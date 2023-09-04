@@ -384,8 +384,10 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
 
             const width = max_x - min_x;
             const height = max_y - min_y;
+
             // hilbert max input value for x and y
             const hilbert_max: T = try u16ToNumT(std.math.maxInt(u16));
+
             const two: T = try u16ToNumT(2);
             // mapping the x and y coordinates of the center of the item boxes to values in the range
             // [0 -> n - 1] such that the min of the entire set of bounding boxes maps to 0 and the max
@@ -394,17 +396,16 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
             var hilbert_values = try self.allocator.alloc(u32, self.num_items);
             defer self.allocator.free(hilbert_values);
 
-            for (0..self.num_items) |i| {
-                const aabb = self.boxes[i];
+            for (self.boxes[0..self.num_items], 0..) |aabb, i| {
                 var x: u16 = 0;
                 if (width != @as(T, 0)) {
                     const x_mid = numTDiv((aabb.min_x + aabb.max_x), two);
-                    x = try numTToU16(hilbert_max * numTDiv(x_mid - min_x, width));
+                    x = try numTToU16(numTDiv(hilbert_max * (x_mid - min_x), width));
                 }
                 var y: u16 = 0;
                 if (height != @as(T, 0)) {
                     const y_mid = numTDiv((aabb.min_y + aabb.max_y), two);
-                    y = try numTToU16(hilbert_max * numTDiv((y_mid - min_y), height));
+                    y = try numTToU16(numTDiv(hilbert_max * (y_mid - min_y), height));
                 }
 
                 hilbert_values[i] = hilbertXYToIndex(x, y);
@@ -579,6 +580,9 @@ fn sort(
 
         swap(T, values, boxes, indices, i, j);
     }
+
+    sort(T, values, boxes, indices, left, j, node_size);
+    sort(T, values, boxes, indices, j +% 1, right, node_size);
 }
 
 fn swap(comptime T: type, values: []u32, boxes: []AABB(T), indices: []usize, i: usize, j: usize) void {
@@ -800,6 +804,19 @@ test "bounds" {
     const index = try createTestIndex(i32);
     defer index.deinit();
     try std.testing.expectEqual(AABB(i32).init(0, 1, 96, 95), index.bounds().?);
+}
+
+test "expected indices order" {
+    const index = try createTestIndex(i32);
+    defer index.deinit();
+    const expected_indices = &[_]usize{
+        95, 92, 87, 70, 67, 64, 55, 52, 49, 43, 40, 11, 26, 19, 44, 9,   59, 77, 84, 6,  88, 21, 86,
+        23, 18, 80, 39, 58, 62, 75, 27, 90, 0,  73, 7,  37, 56, 30, 17,  79, 48, 13, 14, 91, 85, 38,
+        25, 76, 3,  66, 33, 24, 31, 29, 54, 68, 99, 61, 16, 50, 51, 28,  72, 22, 78, 74, 8,  93, 53,
+        89, 20, 83, 81, 32, 10, 96, 47, 5,  63, 4,  98, 35, 82, 57, 65,  97, 46, 2,  41, 42, 36, 69,
+        34, 45, 60, 1,  15, 94, 12, 71, 0,  16, 32, 48, 64, 80, 96, 100,
+    };
+    try std.testing.expectEqualSlices(usize, expected_indices, index.indices);
 }
 
 test "bounds null when 0 items" {
