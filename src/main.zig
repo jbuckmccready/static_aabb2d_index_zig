@@ -796,6 +796,12 @@ test "many tree levels" {
     }
 }
 
+test "bounds" {
+    const index = try createTestIndex(i32);
+    defer index.deinit();
+    try std.testing.expectEqual(AABB(i32).init(0, 1, 96, 95), index.bounds().?);
+}
+
 test "bounds null when 0 items" {
     var builder = try StaticAABB2DIndexBuilder(f64).initWithNodeSize(std.testing.allocator, 0, 16);
     defer builder.deinit();
