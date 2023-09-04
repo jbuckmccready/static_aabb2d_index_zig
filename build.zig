@@ -52,10 +52,10 @@ pub fn build(b: *std.Build) void {
         .root_source_file = .{ .path = "benchmarks/benchmarks.zig" },
         .target = target,
         .optimize = optimize,
+        // linking libc for std.heap.c_allocator in benchmarks
+        .link_libc = true,
     });
     benchmarks.addModule(package_name, lib_module);
-    // linking LibC for std.heap.c_allocator in benchmarks
-    benchmarks.linkLibC();
 
     const run_benchmarks = b.addRunArtifact(benchmarks);
 
