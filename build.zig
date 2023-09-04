@@ -1,5 +1,8 @@
 const std = @import("std");
 
+const package_name = "static_aabb2d_index";
+const package_path = "src/lib.zig";
+
 // Although this function looks imperative, note that its job is to
 // declaratively construct a build graph that will be executed by an external
 // runner.
@@ -16,10 +19,10 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const lib = b.addStaticLibrary(.{
-        .name = "zig_static_aabb2d_index",
+        .name = package_name,
         // In this case the main source file is merely a path, however, in more
         // complicated build scripts, this could be a generated file.
-        .root_source_file = .{ .path = "src/main.zig" },
+        .root_source_file = .{ .path = package_path },
         .target = target,
         .optimize = optimize,
     });
@@ -32,12 +35,32 @@ pub fn build(b: *std.Build) void {
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
     const main_tests = b.addTest(.{
-        .root_source_file = .{ .path = "src/main.zig" },
+        .root_source_file = .{ .path = package_path },
         .target = target,
         .optimize = optimize,
     });
 
     const run_main_tests = b.addRunArtifact(main_tests);
+
+    const lib_module = b.addModule(
+        package_name,
+        .{ .source_file = .{ .path = package_path } },
+    );
+
+    const benchmarks = b.addExecutable(.{
+        .name = "benchmarks",
+        .root_source_file = .{ .path = "benchmarks/benchmarks.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    benchmarks.addModule(package_name, lib_module);
+    // linking LibC for std.heap.c_allocator in benchmarks
+    benchmarks.linkLibC();
+
+    const run_benchmarks = b.addRunArtifact(benchmarks);
+
+    const benchmarks_step = b.step("bench", "Run benchmarks");
+    benchmarks_step.dependOn(&run_benchmarks.step);
 
     // This creates a build step. It will be visible in the `zig build --help` menu,
     // and can be selected like this: `zig build test`
