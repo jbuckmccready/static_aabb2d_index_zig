@@ -112,8 +112,8 @@ fn createIndexFromBoxesAndFree(boxes: []lib.AABB(f64), allocator: std.mem.Alloca
 }
 
 fn queryIndex(index: lib.StaticAABB2DIndex(f64), boxes: []lib.AABB(f64), allocator: std.mem.Allocator) void {
-    var stack = std.ArrayList(usize).init(allocator);
-    defer stack.deinit();
+    var arena_allocator = std.heap.ArenaAllocator.init(allocator);
+    defer arena_allocator.deinit();
     var results_arr = std.ArrayList(usize).init(allocator);
     defer results_arr.deinit();
     const Context = struct {
@@ -132,15 +132,16 @@ fn queryIndex(index: lib.StaticAABB2DIndex(f64), boxes: []lib.AABB(f64), allocat
     while (i < boxes.len) : (i += step) {
         const box = index.boxes[0..index.num_items][i];
         context.query_results.clearRetainingCapacity();
-        index.visitQueryWithStack(
+        index.visitQuery(
             box.min_x - delta,
             box.min_y - delta,
             box.max_x + delta,
             box.max_y + delta,
             &context,
             Context.visit,
-            &stack,
+            arena_allocator.allocator(),
         ) catch @panic("alloc failed");
+        _ = arena_allocator.reset(.retain_capacity);
     }
 }
 
@@ -150,10 +151,6 @@ pub fn main() !void {
     defer _ = gpa.deinit();
 
     const test_input_allocator = std.heap.c_allocator;
-
-    var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
-    defer arena.deinit();
-    const arena_allocator = arena.allocator();
 
     // const points100 = try createPointsOnCircle(100, test_input_allocator);
     // defer test_input_allocator.free(points100);
@@ -166,7 +163,6 @@ pub fn main() !void {
     // try bench("query index 100 boxes gpa", queryIndex, .{ index100, boxes100, gpa_allocator });
     // try bench("query index 100 boxes c alloc", queryIndex, .{ index100, boxes100, std.heap.c_allocator });
     // try bench("create index 100 boxes gpa", createIndexFromBoxesAndFree, .{ boxes100, gpa_allocator });
-    // try bench("create index 100 boxes arena", createIndexFromBoxesAndFree, .{ boxes100, arena_allocator });
     // try bench("create index 100 boxes c alloc", createIndexFromBoxesAndFree, .{ boxes100, std.heap.c_allocator });
 
     // const points1000 = try createPointsOnCircle(1000, test_input_allocator);
@@ -175,7 +171,6 @@ pub fn main() !void {
     // defer test_input_allocator.free(boxes1000);
 
     // try bench("create index 1000 boxes gpa", createIndexFromBoxesAndFree, .{ boxes1000, gpa_allocator });
-    // try bench("create index 1000 boxes arena", createIndexFromBoxesAndFree, .{ boxes1000, arena_allocator });
     // try bench("create index 1000 boxes c alloc", createIndexFromBoxesAndFree, .{ boxes1000, std.heap.c_allocator });
 
     // const points100000 = try createPointsOnCircle(100000, test_input_allocator);
@@ -184,7 +179,6 @@ pub fn main() !void {
     // defer test_input_allocator.free(boxes100000);
 
     // try bench("create index 100000 boxes gpa", createIndexFromBoxesAndFree, .{ boxes100000, gpa_allocator });
-    // try bench("create index 100000 boxes arena", createIndexFromBoxesAndFree, .{ boxes100000, arena_allocator });
     // try bench("create index 100000 boxes c alloc", createIndexFromBoxesAndFree, .{ boxes100000, std.heap.c_allocator });
 
     const points1000000 = try createPointsOnCircle(1000000, test_input_allocator);
@@ -197,6 +191,5 @@ pub fn main() !void {
     try bench("query index 1000000 boxes gpa", queryIndex, .{ index1000000, boxes1000000, gpa_allocator });
     try bench("query index 1000000 boxes c alloc", queryIndex, .{ index1000000, boxes1000000, std.heap.c_allocator });
     try bench("create index 1000000 boxes gpa", createIndexFromBoxesAndFree, .{ boxes1000000, gpa_allocator });
-    try bench("create index 1000000 boxes arena", createIndexFromBoxesAndFree, .{ boxes1000000, arena_allocator });
     try bench("create index 1000000 boxes c alloc", createIndexFromBoxesAndFree, .{ boxes1000000, std.heap.c_allocator });
 }

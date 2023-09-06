@@ -75,6 +75,9 @@ pub fn StaticAABB2DIndex(comptime T: type) type {
             try context.append(index);
             return true;
         }
+
+        /// Perform a query, returning all results. Allocator is used build and return the results
+        /// and allocate temporary stack for traversal.
         pub fn query(
             self: Self,
             min_x: T,
@@ -85,25 +88,24 @@ pub fn StaticAABB2DIndex(comptime T: type) type {
         ) error{OutOfMemory}!std.ArrayList(usize) {
             var result = std.ArrayList(usize).init(allocator);
             errdefer result.deinit();
-            var stack = std.ArrayList(usize).init(allocator);
-            defer stack.deinit();
 
-            self.visitQueryWithStack(
+            self.visitQuery(
                 min_x,
                 min_y,
                 max_x,
                 max_y,
                 &result,
                 collectingVisitor,
-                &stack,
+                allocator,
             ) catch return error.OutOfMemory;
 
             return result;
         }
 
-        /// Perform query with a visitor function and using an existing stack for traversal, if the
-        /// function returns true the query continues, otherwise the query stops.
-        pub fn visitQueryWithStack(
+        /// Perform query with a visitor function and using the allocator given to allocate any
+        /// temporary memory needed for traversal, if the visitor function returns true the query
+        /// continues, otherwise the query stops.
+        pub fn visitQuery(
             self: Self,
             min_x: T,
             min_y: T,
@@ -111,7 +113,7 @@ pub fn StaticAABB2DIndex(comptime T: type) type {
             max_y: T,
             context: anytype,
             comptime visitorFn: fn (@TypeOf(context), index: usize) anyerror!bool,
-            stack: *std.ArrayList(usize),
+            allocator: std.mem.Allocator,
         ) !void {
             if (self.num_items == 0) {
                 return;
@@ -119,7 +121,8 @@ pub fn StaticAABB2DIndex(comptime T: type) type {
 
             var node_index = self.boxes.len - 1;
             var level = self.level_bounds.len - 1;
-            stack.clearRetainingCapacity();
+            var stack = std.ArrayList(usize).init(allocator);
+            defer stack.deinit();
 
             while (true) {
                 const end = @min(node_index + self.node_size, self.level_bounds[level]);
@@ -245,7 +248,7 @@ pub fn StaticAABB2DIndexBuilder(comptime T: type) type {
             const level_bounds = try level_bounds_builder.toOwnedSlice();
             errdefer allocator.free(level_bounds);
 
-            // unitialized array to hold AABB
+            // uninitialized array to hold AABB
             const boxes = try allocator.alloc(AABB(T), num_nodes);
             errdefer allocator.free(boxes);
 
